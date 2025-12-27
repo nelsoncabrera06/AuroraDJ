@@ -529,13 +529,36 @@ class AudioEngine: ObservableObject {
         }
     }
 
-    /// Calcula la posición fraccionaria dentro del beat actual (0.0 a 1.0)
-    func getBeatPhase(deck: DeckID) -> Double? {
-        guard let bpm = getCurrentBPM(deck: deck) else {
-            return nil
+    /// Calcula el tiempo preciso actual basado en AVAudioTime (más preciso que getCurrentTime)
+    private func getPreciseCurrentTime(deck: DeckID) -> TimeInterval? {
+        let player: AVAudioPlayerNode
+        let audioFile: AVAudioFile?
+        let framePosition: AVAudioFramePosition
+
+        switch deck {
+        case .deckA:
+            player = playerA
+            audioFile = audioFileA
+            framePosition = framePositionA
+        case .deckB:
+            player = playerB
+            audioFile = audioFileB
+            framePosition = framePositionB
         }
 
-        let currentTime = getCurrentTime(deck: deck)
+        guard let file = audioFile else { return nil }
+
+        let sampleRate = file.processingFormat.sampleRate
+        return TimeInterval(framePosition) / sampleRate
+    }
+
+    /// Calcula la posición fraccionaria dentro del beat actual (0.0 a 1.0)
+    /// Usa tiempo preciso basado en framePosition en vez de updates periódicos
+    func getBeatPhase(deck: DeckID) -> Double? {
+        guard let bpm = getCurrentBPM(deck: deck),
+              let currentTime = getPreciseCurrentTime(deck: deck) else {
+            return nil
+        }
 
         // Calcular número de beats transcurridos
         let beatsElapsed = currentTime * (bpm / 60.0)
@@ -572,21 +595,30 @@ class AudioEngine: ObservableObject {
     }
 
     /// Alinea los beats del follower deck con el leader deck
+    /// Implementa compensación de latencia predictiva para sincronización precisa
     private func alignBeats(followerDeck: DeckID, leaderDeck: DeckID) {
-        guard let leaderPhase = getBeatPhase(deck: leaderDeck),
+        guard let currentLeaderPhase = getBeatPhase(deck: leaderDeck),
               let followerPhase = getBeatPhase(deck: followerDeck),
-              let followerBPM = getCurrentBPM(deck: followerDeck) else {
+              let leaderBPM = getCurrentBPM(deck: leaderDeck),
+              let followerBPM = getCurrentBPM(deck: followerDeck),
+              let followerCurrentTime = getPreciseCurrentTime(deck: followerDeck) else {
             print("  ⚠️ Cannot align beats: missing beat phase data")
             return
         }
 
-        let followerCurrentTime = getCurrentTime(deck: followerDeck)
+        // COMPENSACIÓN DE LATENCIA PREDICTIVA
+        // Estimar latencia del seek (stop + createBuffer + scheduleBuffer + start)
+        let estimatedSeekLatency = 0.100 // 100ms aproximado
 
-        // Calcular diferencia de fase (0.0 a 1.0)
-        var phaseDiff = leaderPhase - followerPhase
+        // Predecir dónde estará el leader cuando el seek complete
+        let leaderBeatsPerSecond = leaderBPM / 60.0
+        let phaseDeltaDuringLatency = (estimatedSeekLatency * leaderBeatsPerSecond).truncatingRemainder(dividingBy: 1.0)
+        let predictedLeaderPhase = (currentLeaderPhase + phaseDeltaDuringLatency).truncatingRemainder(dividingBy: 1.0)
+
+        // Calcular diferencia de fase usando la fase PREDICHA del leader
+        var phaseDiff = predictedLeaderPhase - followerPhase
 
         // Normalizar a [-0.5, 0.5] (buscar el ajuste más corto)
-        // Si la diferencia es mayor a 0.5, es más corto ir hacia atrás
         if phaseDiff > 0.5 {
             phaseDiff -= 1.0
         } else if phaseDiff < -0.5 {
@@ -594,7 +626,6 @@ class AudioEngine: ObservableObject {
         }
 
         // Convertir diferencia de fase a tiempo (segundos)
-        // 1 beat = 60 / BPM segundos
         let beatDuration = 60.0 / followerBPM
         let timeAdjustment = phaseDiff * beatDuration
 
@@ -602,12 +633,17 @@ class AudioEngine: ObservableObject {
         let newTime = followerCurrentTime + timeAdjustment
 
         if newTime >= 0 {
+            let startTime = CACurrentMediaTime()
             seek(to: newTime, deck: followerDeck)
-            print("  🎵 Beat aligned:")
-            print("    Leader phase: \(String(format: "%.3f", leaderPhase))")
+            let actualLatency = CACurrentMediaTime() - startTime
+
+            print("  🎵 Beat alignment with latency compensation:")
+            print("    Leader phase NOW: \(String(format: "%.3f", currentLeaderPhase))")
+            print("    Leader phase PREDICTED (+\(Int(estimatedSeekLatency * 1000))ms): \(String(format: "%.3f", predictedLeaderPhase))")
             print("    Follower phase: \(String(format: "%.3f", followerPhase))")
-            print("    Phase diff: \(String(format: "%.3f", phaseDiff)) beats")
+            print("    Phase diff (compensated): \(String(format: "%.3f", phaseDiff)) beats")
             print("    Time adjustment: \(String(format: "%.3f", timeAdjustment))s")
+            print("    Actual seek latency: \(String(format: "%.0f", actualLatency * 1000))ms")
         } else {
             print("  ⚠️ Cannot seek to negative time, skipping beat alignment")
         }
