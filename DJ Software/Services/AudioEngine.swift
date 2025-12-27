@@ -32,6 +32,10 @@ class AudioEngine: ObservableObject {
     private var audioFileA: AVAudioFile?
     private var audioFileB: AVAudioFile?
 
+    // Current tracks (for BPM access)
+    private var currentTrackA: Track?
+    private var currentTrackB: Track?
+
     // Security-scoped URLs
     private var securityScopedURLA: URL?
     private var securityScopedURLB: URL?
@@ -39,6 +43,10 @@ class AudioEngine: ObservableObject {
     // Playback state
     private var isPlayingA = false
     private var isPlayingB = false
+
+    // Tempo tracking
+    private var tempoA: Double = 1.0
+    private var tempoB: Double = 1.0
 
     // Position tracking
     private var framePositionA: AVAudioFramePosition = 0
@@ -155,7 +163,7 @@ class AudioEngine: ObservableObject {
     // MARK: - Public API: Load Track
 
     /// Carga una pista en el deck especificado
-    func loadTrack(url: URL, deck: DeckID) -> Bool {
+    func loadTrack(url: URL, deck: DeckID, track: Track? = nil) -> Bool {
         print("🔄 AudioEngine: Attempting to load \(url.lastPathComponent) into Deck \(deck.rawValue)")
 
         // Start accessing security-scoped resource
@@ -174,6 +182,7 @@ class AudioEngine: ObservableObject {
                 }
 
                 audioFileA = audioFile
+                currentTrackA = track
                 framePositionA = 0
                 securityScopedURLA = accessing ? url : nil
                 print("✅ Track loaded in Deck A: \(url.lastPathComponent)")
@@ -185,6 +194,7 @@ class AudioEngine: ObservableObject {
                 }
 
                 audioFileB = audioFile
+                currentTrackB = track
                 framePositionB = 0
                 securityScopedURLB = accessing ? url : nil
                 print("✅ Track loaded in Deck B: \(url.lastPathComponent)")
@@ -376,8 +386,10 @@ class AudioEngine: ObservableObject {
 
         switch deck {
         case .deckA:
+            tempoA = clampedTempo
             timePitchA.rate = Float(clampedTempo)
         case .deckB:
+            tempoB = clampedTempo
             timePitchB.rate = Float(clampedTempo)
         }
     }
@@ -493,6 +505,98 @@ class AudioEngine: ObservableObject {
                 stop(deck: .deckB)
             }
         }
+    }
+
+    // MARK: - Public API: Sync
+
+    /// Obtiene el BPM actual de un deck (BPM original * tempo)
+    func getCurrentBPM(deck: DeckID) -> Double? {
+        switch deck {
+        case .deckA:
+            return currentTrackA?.bpm.map { $0 * tempoA }
+        case .deckB:
+            return currentTrackB?.bpm.map { $0 * tempoB }
+        }
+    }
+
+    /// Obtiene el BPM original de un deck
+    func getOriginalBPM(deck: DeckID) -> Double? {
+        switch deck {
+        case .deckA:
+            return currentTrackA?.bpm
+        case .deckB:
+            return currentTrackB?.bpm
+        }
+    }
+
+    /// Calcula la posición del beat actual dentro de un compás de 4 tiempos (0.0 a 4.0)
+    func getBeatPosition(deck: DeckID) -> Double? {
+        guard let bpm = getCurrentBPM(deck: deck) else {
+            return nil
+        }
+
+        let currentTime = getCurrentTime(deck: deck)
+
+        // Calcular número de beats transcurridos
+        let beatsElapsed = currentTime * (bpm / 60.0)
+
+        // Retornar posición dentro del compás (0.0 a 4.0)
+        return beatsElapsed.truncatingRemainder(dividingBy: 4.0)
+    }
+
+    /// Sincroniza el deck follower con el deck leader (matchea BPM y alinea beats)
+    func sync(followerDeck: DeckID, leaderDeck: DeckID) {
+        // 1. Verificar que ambos decks tengan tracks con BPM
+        guard let leaderBPM = getCurrentBPM(deck: leaderDeck),
+              let followerOriginalBPM = getOriginalBPM(deck: followerDeck) else {
+            print("⚠️ Cannot sync: missing BPM data")
+            print("  Leader BPM: \(getCurrentBPM(deck: leaderDeck) as Double?)")
+            print("  Follower Original BPM: \(getOriginalBPM(deck: followerDeck) as Double?)")
+            return
+        }
+
+        // 2. Calcular nuevo tempo para matchear BPM
+        let newTempo = leaderBPM / followerOriginalBPM
+        let clampedTempo = min(max(newTempo, 0.5), 2.0)
+
+        // 3. Aplicar nuevo tempo
+        setTempo(clampedTempo, deck: followerDeck)
+
+        print("🔄 Synced \(followerDeck): tempo=\(String(format: "%.3f", clampedTempo)), BPM=\(String(format: "%.1f", leaderBPM))")
+
+        // 4. Si follower está en play, sincronizar beats
+        let isFollowerPlaying = (followerDeck == .deckA) ? isPlayingA : isPlayingB
+        if isFollowerPlaying {
+            alignBeats(followerDeck: followerDeck, leaderDeck: leaderDeck)
+        }
+    }
+
+    /// Alinea los beats del follower deck con el leader deck
+    private func alignBeats(followerDeck: DeckID, leaderDeck: DeckID) {
+        guard let leaderBeatPos = getBeatPosition(deck: leaderDeck),
+              let followerBeatPos = getBeatPosition(deck: followerDeck),
+              let followerBPM = getCurrentBPM(deck: followerDeck) else {
+            print("  ⚠️ Cannot align beats: missing beat position data")
+            return
+        }
+
+        let followerCurrentTime = getCurrentTime(deck: followerDeck)
+
+        // Calcular diferencia de fase (en beats)
+        var phaseDiff = leaderBeatPos - followerBeatPos
+
+        // Normalizar a [-2, 2] (buscar el ajuste más corto dentro del compás)
+        if phaseDiff > 2.0 { phaseDiff -= 4.0 }
+        if phaseDiff < -2.0 { phaseDiff += 4.0 }
+
+        // Convertir diferencia de beats a tiempo (segundos)
+        let timeAdjustment = phaseDiff / (followerBPM / 60.0)
+
+        // Seek a nueva posición
+        let newTime = followerCurrentTime + timeAdjustment
+        seek(to: max(0, newTime), deck: followerDeck)
+
+        print("  🎵 Beat aligned: phase diff = \(String(format: "%.3f", phaseDiff)) beats, time adjust = \(String(format: "%.3f", timeAdjustment))s")
     }
 }
 

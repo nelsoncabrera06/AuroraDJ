@@ -47,7 +47,7 @@ class DeckViewModel: ObservableObject {
 
             // Cargar en el audio engine
             print("🔄 DeckViewModel: Loading into AudioEngine...")
-            let success = audioEngine.loadTrack(url: url, deck: deckID)
+            let success = audioEngine.loadTrack(url: url, deck: deckID, track: track)
 
             if success {
                 await MainActor.run {
@@ -77,7 +77,7 @@ class DeckViewModel: ObservableObject {
     func loadTrack(_ track: Track) {
         state.currentTrack = track
 
-        let success = audioEngine.loadTrack(url: track.url, deck: deckID)
+        let success = audioEngine.loadTrack(url: track.url, deck: deckID, track: track)
 
         if success {
             // Reset state
@@ -231,5 +231,20 @@ class DeckViewModel: ObservableObject {
 
         state.isLooping.toggle()
         print("🔁 Loop \(state.isLooping ? "enabled" : "disabled") in Deck \(deckID.rawValue)")
+    }
+
+    // MARK: - Sync
+
+    /// Sincroniza este deck con el deck opuesto (matchea BPM y alinea beats)
+    func syncWithOppositeDeck() {
+        let oppositeDeck: DeckID = (self.deckID == .deckA) ? .deckB : .deckA
+        audioEngine.sync(followerDeck: self.deckID, leaderDeck: oppositeDeck)
+
+        // Actualizar el tempo en el state después de sincronizar
+        if let originalBPM = state.originalBPM,
+           let leaderBPM = audioEngine.getCurrentBPM(deck: oppositeDeck) {
+            let newTempo = leaderBPM / originalBPM
+            state.tempo = min(max(newTempo, 0.5), 2.0)
+        }
     }
 }

@@ -159,8 +159,12 @@ class MIDIViewModel: ObservableObject {
 
         case .sync(let deck):
             print("🔄 MIDI Action: Sync - Deck \(deck.rawValue)")
-            // TODO: Implement sync functionality
-            print("  ⚠️ Sync not yet implemented")
+            switch deck {
+            case .deckA:
+                deckAViewModel?.syncWithOppositeDeck()
+            case .deckB:
+                deckBViewModel?.syncWithOppositeDeck()
+            }
 
         // Hot Cues
         case .triggerHotCue(let deck, let slot):
