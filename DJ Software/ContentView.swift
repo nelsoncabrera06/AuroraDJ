@@ -67,24 +67,26 @@ struct ContentView: View {
 
             // Large Zoomed Waveforms (Full Width) - VirtualDJ Style
             VStack(spacing: 10) {
-                // Deck A Waveform (Zoomed with scrolling)
+                // Deck A Waveform (Zoomed with scrolling, tempo-adjusted)
                 ZoomedWaveformView(
                     waveformData: deckAViewModel.state.waveformData,
                     currentTime: deckAViewModel.state.currentTime,
                     duration: deckAViewModel.state.duration,
                     color: .blue,
                     height: 100,
-                    visibleWindowSeconds: 30.0  // ~10-12 bars at 120 BPM
+                    visibleWindowSeconds: 30.0,  // ~10-12 bars at 120 BPM
+                    tempo: deckAViewModel.state.tempo
                 )
 
-                // Deck B Waveform (Zoomed with scrolling)
+                // Deck B Waveform (Zoomed with scrolling, tempo-adjusted)
                 ZoomedWaveformView(
                     waveformData: deckBViewModel.state.waveformData,
                     currentTime: deckBViewModel.state.currentTime,
                     duration: deckBViewModel.state.duration,
                     color: .red,
                     height: 100,
-                    visibleWindowSeconds: 30.0  // ~10-12 bars at 120 BPM
+                    visibleWindowSeconds: 30.0,  // ~10-12 bars at 120 BPM
+                    tempo: deckBViewModel.state.tempo
                 )
             }
             .padding(.horizontal)

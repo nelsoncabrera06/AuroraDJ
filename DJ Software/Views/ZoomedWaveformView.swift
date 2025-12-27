@@ -29,13 +29,19 @@ struct ZoomedWaveformView: View {
     /// Por ejemplo: 30 segundos = ~10-12 compases a 120 BPM
     let visibleWindowSeconds: TimeInterval
 
+    /// Tempo actual (0.5 a 2.0) - ajusta la ventana visible
+    /// Si tempo = 1.2, muestra más segundos de audio (comprimido)
+    /// Si tempo = 0.8, muestra menos segundos de audio (estirado)
+    let tempo: Double
+
     init(
         waveformData: WaveformData?,
         currentTime: TimeInterval,
         duration: TimeInterval,
         color: Color,
         height: CGFloat,
-        visibleWindowSeconds: TimeInterval = 30.0
+        visibleWindowSeconds: TimeInterval = 30.0,
+        tempo: Double = 1.0
     ) {
         self.waveformData = waveformData
         self.currentTime = currentTime
@@ -43,6 +49,7 @@ struct ZoomedWaveformView: View {
         self.color = color
         self.height = height
         self.visibleWindowSeconds = visibleWindowSeconds
+        self.tempo = tempo
     }
 
     var body: some View {
@@ -72,8 +79,9 @@ struct ZoomedWaveformView: View {
     private func calculatePlayheadX(data: WaveformData, size: CGSize) -> CGFloat {
         guard data.duration > 0 else { return size.width / 2 }
 
-        // Calcular ventana visible
-        let windowDuration = min(visibleWindowSeconds, data.duration)
+        // Calcular ventana visible ajustada por tempo
+        let tempoAdjustedWindow = visibleWindowSeconds / tempo
+        let windowDuration = min(tempoAdjustedWindow, data.duration)
         var startTime: TimeInterval
 
         if currentTime < windowDuration / 2.0 {
@@ -101,8 +109,12 @@ struct ZoomedWaveformView: View {
         let samples = data.samples
         guard samples.count > 0, data.duration > 0 else { return }
 
-        // Calcular ventana visible (siempre 30 segundos completos si es posible)
-        let windowDuration = min(visibleWindowSeconds, data.duration)
+        // Ajustar ventana visible por tempo
+        // Si tempo > 1.0 (más rápido), mostrar más segundos de audio (comprimido)
+        // Si tempo < 1.0 (más lento), mostrar menos segundos de audio (estirado)
+        // Esto hace que el waveform coincida con lo que escuchas
+        let tempoAdjustedWindow = visibleWindowSeconds / tempo
+        let windowDuration = min(tempoAdjustedWindow, data.duration)
         var startTime: TimeInterval
         var endTime: TimeInterval
 
@@ -228,7 +240,7 @@ struct ZoomedWaveformView: View {
 
 #Preview {
     VStack(spacing: 20) {
-        // Zoomed waveform con datos (simulado)
+        // Zoomed waveform con datos (simulado) - tempo normal
         ZoomedWaveformView(
             waveformData: WaveformData(
                 trackID: UUID(),
@@ -240,7 +252,25 @@ struct ZoomedWaveformView: View {
             duration: 180,
             color: .blue,
             height: 100,
-            visibleWindowSeconds: 30
+            visibleWindowSeconds: 30,
+            tempo: 1.0
+        )
+        .padding()
+
+        // Zoomed waveform con tempo rápido (1.2x)
+        ZoomedWaveformView(
+            waveformData: WaveformData(
+                trackID: UUID(),
+                samples: (0..<1000).map { _ in Float.random(in: 0.2...1.0) },
+                samplesPerSecond: 50,
+                duration: 180
+            ),
+            currentTime: 60,
+            duration: 180,
+            color: .green,
+            height: 100,
+            visibleWindowSeconds: 30,
+            tempo: 1.2
         )
         .padding()
 
