@@ -529,8 +529,8 @@ class AudioEngine: ObservableObject {
         }
     }
 
-    /// Calcula la posición del beat actual dentro de un compás de 4 tiempos (0.0 a 4.0)
-    func getBeatPosition(deck: DeckID) -> Double? {
+    /// Calcula la posición fraccionaria dentro del beat actual (0.0 a 1.0)
+    func getBeatPhase(deck: DeckID) -> Double? {
         guard let bpm = getCurrentBPM(deck: deck) else {
             return nil
         }
@@ -540,8 +540,8 @@ class AudioEngine: ObservableObject {
         // Calcular número de beats transcurridos
         let beatsElapsed = currentTime * (bpm / 60.0)
 
-        // Retornar posición dentro del compás (0.0 a 4.0)
-        return beatsElapsed.truncatingRemainder(dividingBy: 4.0)
+        // Retornar posición fraccionaria dentro del beat actual (0.0 a 1.0)
+        return beatsElapsed.truncatingRemainder(dividingBy: 1.0)
     }
 
     /// Sincroniza el deck follower con el deck leader (matchea BPM y alinea beats)
@@ -573,30 +573,44 @@ class AudioEngine: ObservableObject {
 
     /// Alinea los beats del follower deck con el leader deck
     private func alignBeats(followerDeck: DeckID, leaderDeck: DeckID) {
-        guard let leaderBeatPos = getBeatPosition(deck: leaderDeck),
-              let followerBeatPos = getBeatPosition(deck: followerDeck),
+        guard let leaderPhase = getBeatPhase(deck: leaderDeck),
+              let followerPhase = getBeatPhase(deck: followerDeck),
               let followerBPM = getCurrentBPM(deck: followerDeck) else {
-            print("  ⚠️ Cannot align beats: missing beat position data")
+            print("  ⚠️ Cannot align beats: missing beat phase data")
             return
         }
 
         let followerCurrentTime = getCurrentTime(deck: followerDeck)
 
-        // Calcular diferencia de fase (en beats)
-        var phaseDiff = leaderBeatPos - followerBeatPos
+        // Calcular diferencia de fase (0.0 a 1.0)
+        var phaseDiff = leaderPhase - followerPhase
 
-        // Normalizar a [-2, 2] (buscar el ajuste más corto dentro del compás)
-        if phaseDiff > 2.0 { phaseDiff -= 4.0 }
-        if phaseDiff < -2.0 { phaseDiff += 4.0 }
+        // Normalizar a [-0.5, 0.5] (buscar el ajuste más corto)
+        // Si la diferencia es mayor a 0.5, es más corto ir hacia atrás
+        if phaseDiff > 0.5 {
+            phaseDiff -= 1.0
+        } else if phaseDiff < -0.5 {
+            phaseDiff += 1.0
+        }
 
-        // Convertir diferencia de beats a tiempo (segundos)
-        let timeAdjustment = phaseDiff / (followerBPM / 60.0)
+        // Convertir diferencia de fase a tiempo (segundos)
+        // 1 beat = 60 / BPM segundos
+        let beatDuration = 60.0 / followerBPM
+        let timeAdjustment = phaseDiff * beatDuration
 
         // Seek a nueva posición
         let newTime = followerCurrentTime + timeAdjustment
-        seek(to: max(0, newTime), deck: followerDeck)
 
-        print("  🎵 Beat aligned: phase diff = \(String(format: "%.3f", phaseDiff)) beats, time adjust = \(String(format: "%.3f", timeAdjustment))s")
+        if newTime >= 0 {
+            seek(to: newTime, deck: followerDeck)
+            print("  🎵 Beat aligned:")
+            print("    Leader phase: \(String(format: "%.3f", leaderPhase))")
+            print("    Follower phase: \(String(format: "%.3f", followerPhase))")
+            print("    Phase diff: \(String(format: "%.3f", phaseDiff)) beats")
+            print("    Time adjustment: \(String(format: "%.3f", timeAdjustment))s")
+        } else {
+            print("  ⚠️ Cannot seek to negative time, skipping beat alignment")
+        }
     }
 }
 
