@@ -210,11 +210,43 @@ struct DeckTestView: View {
 
             // Playback controls
             HStack(spacing: 20) {
+                // CUE button (left of play)
+                Button(action: {
+                    viewModel.jumpToCue()
+                }) {
+                    VStack(spacing: 2) {
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 30))
+                        Text("CUE")
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                    }
+                    .foregroundColor(viewModel.state.cuePoint != nil ? .orange : .gray)
+                }
+                .buttonStyle(.plain)
+                .disabled(!viewModel.state.hasTrack)
+
+                // PLAY/PAUSE button (center)
                 Button(action: {
                     viewModel.togglePlayPause()
                 }) {
                     Image(systemName: viewModel.state.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 50))
+                }
+                .buttonStyle(.plain)
+                .disabled(!viewModel.state.hasTrack)
+
+                // SYNC button (right of play)
+                Button(action: {
+                    viewModel.syncWithOppositeDeck()
+                }) {
+                    VStack(spacing: 2) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 30))
+                        Text("SYNC")
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                    }
                 }
                 .buttonStyle(.plain)
                 .disabled(!viewModel.state.hasTrack)
