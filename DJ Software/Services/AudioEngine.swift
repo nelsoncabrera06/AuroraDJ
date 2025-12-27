@@ -61,6 +61,15 @@ class AudioEngine: ObservableObject {
     // Callbacks para actualizar UI
     var onPositionUpdate: ((DeckID, TimeInterval) -> Void)?
 
+    // CPU Optimization: Cache last position updates for throttling
+    private var lastUpdateTimeA: TimeInterval = 0
+    private var lastUpdateTimeB: TimeInterval = 0
+    private let updateThreshold: TimeInterval = 0.05 // Only update if change > 50ms
+
+    // CPU Optimization: Cache sample rates
+    private var sampleRateA: Double = 44100
+    private var sampleRateB: Double = 44100
+
     // MARK: - Initialization
 
     init() {
@@ -118,8 +127,8 @@ class AudioEngine: ObservableObject {
         setupEQ(eqA)
         setupEQ(eqB)
 
-        // Start position update timer (30 FPS)
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+        // Start position update timer (15 FPS - optimized for CPU usage)
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.updatePositions()
             }
@@ -184,6 +193,7 @@ class AudioEngine: ObservableObject {
                 audioFileA = audioFile
                 currentTrackA = track
                 framePositionA = 0
+                sampleRateA = audioFile.processingFormat.sampleRate // Cache sample rate
                 securityScopedURLA = accessing ? url : nil
                 print("✅ Track loaded in Deck A: \(url.lastPathComponent)")
 
@@ -196,6 +206,7 @@ class AudioEngine: ObservableObject {
                 audioFileB = audioFile
                 currentTrackB = track
                 framePositionB = 0
+                sampleRateB = audioFile.processingFormat.sampleRate // Cache sample rate
                 securityScopedURLB = accessing ? url : nil
                 print("✅ Track loaded in Deck B: \(url.lastPathComponent)")
             }
@@ -476,13 +487,18 @@ class AudioEngine: ObservableObject {
     private func updatePositions() {
         // Update Deck A
         if isPlayingA, let lastTime = lastRenderTimeA, let nodeTime = playerA.lastRenderTime {
-            let sampleRate = audioFileA?.processingFormat.sampleRate ?? 44100
             let deltaFrames = nodeTime.sampleTime - lastTime.sampleTime
             framePositionA += deltaFrames
             lastRenderTimeA = nodeTime
 
-            let currentTime = TimeInterval(framePositionA) / sampleRate
-            onPositionUpdate?(.deckA, currentTime)
+            let currentTime = TimeInterval(framePositionA) / sampleRateA // Use cached sample rate
+
+            // CPU Optimization: Throttling - only update if change is significant
+            let timeDelta = abs(currentTime - lastUpdateTimeA)
+            if timeDelta >= updateThreshold {
+                onPositionUpdate?(.deckA, currentTime)
+                lastUpdateTimeA = currentTime
+            }
 
             // Check if reached end
             if let file = audioFileA, framePositionA >= file.length {
@@ -492,13 +508,18 @@ class AudioEngine: ObservableObject {
 
         // Update Deck B
         if isPlayingB, let lastTime = lastRenderTimeB, let nodeTime = playerB.lastRenderTime {
-            let sampleRate = audioFileB?.processingFormat.sampleRate ?? 44100
             let deltaFrames = nodeTime.sampleTime - lastTime.sampleTime
             framePositionB += deltaFrames
             lastRenderTimeB = nodeTime
 
-            let currentTime = TimeInterval(framePositionB) / sampleRate
-            onPositionUpdate?(.deckB, currentTime)
+            let currentTime = TimeInterval(framePositionB) / sampleRateB // Use cached sample rate
+
+            // CPU Optimization: Throttling - only update if change is significant
+            let timeDelta = abs(currentTime - lastUpdateTimeB)
+            if timeDelta >= updateThreshold {
+                onPositionUpdate?(.deckB, currentTime)
+                lastUpdateTimeB = currentTime
+            }
 
             // Check if reached end
             if let file = audioFileB, framePositionB >= file.length {
