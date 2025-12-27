@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMusicUsageDescription</key>
+	<string>DJ Software necesita acceso a tu biblioteca de música para cargar y reproducir pistas de audio.</string>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>DJ Software necesita acceso a Apple Music para cargar pistas.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>DJ Software necesita acceso a tus documentos para cargar archivos de audio.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>DJ Software necesita acceso a tu carpeta de Descargas para cargar archivos de audio.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>DJ Software necesita acceso a tu Escritorio para cargar archivos de audio.</string>
+</dict>
+</plist>
