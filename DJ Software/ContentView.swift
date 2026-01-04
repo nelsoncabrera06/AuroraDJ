@@ -29,10 +29,11 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 20) {
-            Text("DJ Software - Test UI")
-                .font(.title)
-                .bold()
+        ScrollView {
+            VStack(spacing: 20) {
+                Text("DJ Software - Test UI")
+                    .font(.title)
+                    .bold()
 
             // MIDI Status
             HStack {
@@ -66,28 +67,31 @@ struct ContentView: View {
             .padding(.horizontal)
 
             // Large Zoomed Waveforms (Full Width) - VirtualDJ Style
+            // Using optimized Canvas with drawingGroup() for GPU-accelerated compositing
             VStack(spacing: 10) {
-                // Deck A Waveform (Zoomed with scrolling, tempo-adjusted)
+                // Deck A Waveform (Optimized with GPU compositing)
                 ZoomedWaveformView(
                     waveformData: deckAViewModel.state.waveformData,
                     currentTime: deckAViewModel.state.currentTime,
                     duration: deckAViewModel.state.duration,
-                    color: .blue,
+                    color: .cyan,
                     height: 100,
                     visibleWindowSeconds: 30.0,  // ~10-12 bars at 120 BPM
                     tempo: deckAViewModel.state.tempo
                 )
+                .drawingGroup() // GPU-accelerated compositing
 
-                // Deck B Waveform (Zoomed with scrolling, tempo-adjusted)
+                // Deck B Waveform (Optimized with GPU compositing)
                 ZoomedWaveformView(
                     waveformData: deckBViewModel.state.waveformData,
                     currentTime: deckBViewModel.state.currentTime,
                     duration: deckBViewModel.state.duration,
-                    color: .red,
+                    color: .orange,
                     height: 100,
                     visibleWindowSeconds: 30.0,  // ~10-12 bars at 120 BPM
                     tempo: deckBViewModel.state.tempo
                 )
+                .drawingGroup() // GPU-accelerated compositing
             }
             .padding(.horizontal)
 
@@ -127,6 +131,7 @@ struct ContentView: View {
                     midiViewModel.connectToBehringer()
                 }
             }
+        }
         }
     }
 }

@@ -8,6 +8,7 @@
 import Foundation
 import AVFoundation
 import Combine
+import CoreVideo
 
 /// Motor de audio central que maneja la reproducción de dos decks independientes
 class AudioEngine: ObservableObject {
@@ -32,6 +33,11 @@ class AudioEngine: ObservableObject {
     private var audioFileA: AVAudioFile?
     private var audioFileB: AVAudioFile?
 
+    // PRE-CARGA RAM: Buffers completos en memoria para seeks instantáneos
+    // Cada track stereo 44.1kHz de 5 min ≈ 106 MB RAM
+    private var preloadedBufferA: AVAudioPCMBuffer?
+    private var preloadedBufferB: AVAudioPCMBuffer?
+
     // Current tracks (for BPM access)
     private var currentTrackA: Track?
     private var currentTrackB: Track?
@@ -55,16 +61,23 @@ class AudioEngine: ObservableObject {
     private var lastRenderTimeA: AVAudioTime?
     private var lastRenderTimeB: AVAudioTime?
 
-    // Timers for position updates
-    private var updateTimer: Timer?
+    // CVDisplayLink for synchronized position updates (replaces Timer)
+    private var displayLink: CVDisplayLink?
+    private var displayLinkRunning = false
+
+    // Frame skipping for waveform updates (reduces CPU load)
+    // OPTIMIZADO v3: Subido a 30Hz - con imagen pre-renderizada es muy liviano
+    private var frameCounter: UInt64 = 0
+    private let waveformUpdateFrequency: UInt64 = 2 // Update waveforms every 2 frames (~30Hz)
 
     // Callbacks para actualizar UI
     var onPositionUpdate: ((DeckID, TimeInterval) -> Void)?
 
     // CPU Optimization: Cache last position updates for throttling
+    // OPTIMIZADO v3: Subido a 30 FPS (33ms) - con imagen pre-renderizada es liviano
     private var lastUpdateTimeA: TimeInterval = 0
     private var lastUpdateTimeB: TimeInterval = 0
-    private let updateThreshold: TimeInterval = 0.05 // Only update if change > 50ms
+    private let updateThreshold: TimeInterval = 0.033 // 33ms = 30 FPS
 
     // CPU Optimization: Cache sample rates
     private var sampleRateA: Double = 44100
@@ -80,7 +93,14 @@ class AudioEngine: ObservableObject {
     deinit {
         stop(deck: .deckA)
         stop(deck: .deckB)
-        updateTimer?.invalidate()
+
+        // Stop and release CVDisplayLink
+        if let link = displayLink {
+            if displayLinkRunning {
+                CVDisplayLinkStop(link)
+            }
+        }
+        displayLink = nil
 
         // Release security-scoped resources
         if let url = securityScopedURLA {
@@ -127,10 +147,124 @@ class AudioEngine: ObservableObject {
         setupEQ(eqA)
         setupEQ(eqB)
 
-        // Start position update timer (15 FPS - optimized for CPU usage)
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.updatePositions()
+        // Setup CVDisplayLink for synchronized position updates
+        // DisplayLink only runs when decks are playing (smart pausing)
+        setupDisplayLink()
+    }
+
+    // MARK: - CVDisplayLink Setup
+
+    private func setupDisplayLink() {
+        var link: CVDisplayLink?
+        let status = CVDisplayLinkCreateWithActiveCGDisplays(&link)
+
+        guard status == kCVReturnSuccess, let displayLink = link else {
+            print("❌ Failed to create CVDisplayLink")
+            return
+        }
+
+        self.displayLink = displayLink
+
+        // Set output callback
+        let callback: CVDisplayLinkOutputCallback = { displayLink, inNow, inOutputTime, flagsIn, flagsOut, displayLinkContext in
+            guard let context = displayLinkContext else { return kCVReturnError }
+            let engine = Unmanaged<AudioEngine>.fromOpaque(context).takeUnretainedValue()
+            engine.handleDisplayLinkCallback()
+            return kCVReturnSuccess
+        }
+
+        CVDisplayLinkSetOutputCallback(displayLink, callback, Unmanaged.passUnretained(self).toOpaque())
+        print("✅ CVDisplayLink setup complete (smart pausing enabled)")
+    }
+
+    /// Handles each display refresh - runs on high-priority display thread
+    private func handleDisplayLinkCallback() {
+        frameCounter += 1
+
+        // Always calculate positions internally at 60Hz for precision
+        let positionA = calculateCurrentPosition(deck: .deckA)
+        let positionB = calculateCurrentPosition(deck: .deckB)
+
+        // Only notify UI at reduced rate for waveforms (~30Hz) to reduce CPU
+        if frameCounter % waveformUpdateFrequency == 0 {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.notifyPositionUpdates(positionA: positionA, positionB: positionB)
+            }
+        }
+    }
+
+    /// Calculate current position without updating UI (internal precision tracking)
+    private func calculateCurrentPosition(deck: DeckID) -> TimeInterval? {
+        switch deck {
+        case .deckA:
+            guard isPlayingA, let lastTime = lastRenderTimeA, let nodeTime = playerA.lastRenderTime else {
+                return nil
+            }
+            let deltaFrames = nodeTime.sampleTime - lastTime.sampleTime
+            framePositionA += deltaFrames
+            lastRenderTimeA = nodeTime
+
+            // Check if reached end
+            if let file = audioFileA, framePositionA >= file.length {
+                DispatchQueue.main.async { [weak self] in
+                    self?.stop(deck: .deckA)
+                }
+            }
+            return TimeInterval(framePositionA) / sampleRateA
+
+        case .deckB:
+            guard isPlayingB, let lastTime = lastRenderTimeB, let nodeTime = playerB.lastRenderTime else {
+                return nil
+            }
+            let deltaFrames = nodeTime.sampleTime - lastTime.sampleTime
+            framePositionB += deltaFrames
+            lastRenderTimeB = nodeTime
+
+            // Check if reached end
+            if let file = audioFileB, framePositionB >= file.length {
+                DispatchQueue.main.async { [weak self] in
+                    self?.stop(deck: .deckB)
+                }
+            }
+            return TimeInterval(framePositionB) / sampleRateB
+        }
+    }
+
+    /// Notify UI of position changes (runs on main thread)
+    private func notifyPositionUpdates(positionA: TimeInterval?, positionB: TimeInterval?) {
+        // Deck A - throttled updates
+        if let currentTime = positionA {
+            let timeDelta = abs(currentTime - lastUpdateTimeA)
+            if timeDelta >= updateThreshold {
+                onPositionUpdate?(.deckA, currentTime)
+                lastUpdateTimeA = currentTime
+            }
+        }
+
+        // Deck B - throttled updates
+        if let currentTime = positionB {
+            let timeDelta = abs(currentTime - lastUpdateTimeB)
+            if timeDelta >= updateThreshold {
+                onPositionUpdate?(.deckB, currentTime)
+                lastUpdateTimeB = currentTime
+            }
+        }
+    }
+
+    /// Start/stop display link based on playback state (smart pausing)
+    private func updateDisplayLinkState() {
+        let anyPlaying = isPlayingA || isPlayingB
+
+        if anyPlaying && !displayLinkRunning {
+            if let link = displayLink {
+                CVDisplayLinkStart(link)
+                displayLinkRunning = true
+            }
+        } else if !anyPlaying && displayLinkRunning {
+            if let link = displayLink {
+                CVDisplayLinkStop(link)
+                displayLinkRunning = false
             }
         }
     }
@@ -183,6 +317,10 @@ class AudioEngine: ObservableObject {
             let audioFile = try AVAudioFile(forReading: url)
             print("✅ AudioFile created successfully")
 
+            // PRE-CARGA RAM: Leer todo el archivo a memoria para seeks instantáneos
+            let preloadedBuffer = preloadEntireFile(audioFile)
+            let memoryMB = preloadedBuffer.map { Double($0.frameLength) * Double($0.format.channelCount) * 4 / 1_000_000 } ?? 0
+
             switch deck {
             case .deckA:
                 // Release previous security-scoped resource if any
@@ -191,11 +329,12 @@ class AudioEngine: ObservableObject {
                 }
 
                 audioFileA = audioFile
+                preloadedBufferA = preloadedBuffer
                 currentTrackA = track
                 framePositionA = 0
                 sampleRateA = audioFile.processingFormat.sampleRate // Cache sample rate
                 securityScopedURLA = accessing ? url : nil
-                print("✅ Track loaded in Deck A: \(url.lastPathComponent)")
+                print("✅ Track loaded in Deck A: \(url.lastPathComponent) (\(String(format: "%.1f", memoryMB)) MB en RAM)")
 
             case .deckB:
                 // Release previous security-scoped resource if any
@@ -204,11 +343,12 @@ class AudioEngine: ObservableObject {
                 }
 
                 audioFileB = audioFile
+                preloadedBufferB = preloadedBuffer
                 currentTrackB = track
                 framePositionB = 0
                 sampleRateB = audioFile.processingFormat.sampleRate // Cache sample rate
                 securityScopedURLB = accessing ? url : nil
-                print("✅ Track loaded in Deck B: \(url.lastPathComponent)")
+                print("✅ Track loaded in Deck B: \(url.lastPathComponent) (\(String(format: "%.1f", memoryMB)) MB en RAM)")
             }
 
             return true
@@ -231,13 +371,13 @@ class AudioEngine: ObservableObject {
     func play(deck: DeckID) {
         switch deck {
         case .deckA:
-            guard let audioFile = audioFileA else {
+            guard audioFileA != nil else {
                 print("⚠️ No track loaded in Deck A")
                 return
             }
 
             if !isPlayingA {
-                scheduleFile(audioFile, player: playerA, framePosition: framePositionA)
+                scheduleFile(deck: .deckA, player: playerA, framePosition: framePositionA)
                 playerA.play()
                 isPlayingA = true
                 lastRenderTimeA = playerA.lastRenderTime
@@ -245,19 +385,22 @@ class AudioEngine: ObservableObject {
             }
 
         case .deckB:
-            guard let audioFile = audioFileB else {
+            guard audioFileB != nil else {
                 print("⚠️ No track loaded in Deck B")
                 return
             }
 
             if !isPlayingB {
-                scheduleFile(audioFile, player: playerB, framePosition: framePositionB)
+                scheduleFile(deck: .deckB, player: playerB, framePosition: framePositionB)
                 playerB.play()
                 isPlayingB = true
                 lastRenderTimeB = playerB.lastRenderTime
                 print("▶️ Deck B playing from position \(framePositionB)")
             }
         }
+
+        // Start display link if not running (smart pausing)
+        updateDisplayLinkState()
     }
 
     /// Pausa el deck especificado
@@ -277,6 +420,9 @@ class AudioEngine: ObservableObject {
                 print("⏸️ Deck B paused")
             }
         }
+
+        // Stop display link if no decks playing (smart pausing)
+        updateDisplayLinkState()
     }
 
     /// Detiene el deck especificado y resetea la posición
@@ -294,6 +440,9 @@ class AudioEngine: ObservableObject {
             framePositionB = 0
             print("⏹️ Deck B stopped")
         }
+
+        // Stop display link if no decks playing (smart pausing)
+        updateDisplayLinkState()
     }
 
     /// Toggle play/pause
@@ -450,12 +599,63 @@ class AudioEngine: ObservableObject {
 
         guard bandIndex < eq.bands.count else { return }
         eq.bands[bandIndex].gain = clampedGain
+
+        // OPTIMIZADO v2: Bypass EQ si todas las bandas están en 0 (ahorra CPU)
+        updateEQBypass(deck: deck)
+    }
+
+    /// Bypass EQ cuando todas las bandas están en 0 para ahorrar CPU
+    private func updateEQBypass(deck: DeckID) {
+        let eq = deck == .deckA ? eqA : eqB
+        let allZero = eq.bands.allSatisfy { abs($0.gain) < 0.1 }
+        eq.bypass = allZero
     }
 
     // MARK: - Private: Audio Scheduling
 
-    private func scheduleFile(_ file: AVAudioFile, player: AVAudioPlayerNode, framePosition: AVAudioFramePosition) {
-        guard let buffer = createBuffer(from: file, startingFrame: framePosition) else {
+    /// Pre-carga el archivo de audio completo en RAM para seeks instantáneos
+    private func preloadEntireFile(_ file: AVAudioFile) -> AVAudioPCMBuffer? {
+        let frameCount = AVAudioFrameCount(file.length)
+
+        guard frameCount > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frameCount) else {
+            print("❌ Failed to create preload buffer")
+            return nil
+        }
+
+        file.framePosition = 0
+
+        do {
+            try file.read(into: buffer)
+            print("✅ Pre-loaded \(frameCount) frames into RAM")
+            return buffer
+        } catch {
+            print("❌ Error pre-loading audio file: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func scheduleFile(deck: DeckID, player: AVAudioPlayerNode, framePosition: AVAudioFramePosition) {
+        // Obtener archivo y buffer pre-cargado del deck
+        let file: AVAudioFile?
+        let preloadedBuffer: AVAudioPCMBuffer?
+
+        switch deck {
+        case .deckA:
+            file = audioFileA
+            preloadedBuffer = preloadedBufferA
+        case .deckB:
+            file = audioFileB
+            preloadedBuffer = preloadedBufferB
+        }
+
+        guard let audioFile = file else {
+            print("❌ No audio file for deck \(deck.rawValue)")
+            return
+        }
+
+        // Crear sub-buffer desde la posición actual
+        guard let buffer = createBufferFromPreloaded(preloadedBuffer, file: audioFile, startingFrame: framePosition) else {
             print("❌ Failed to create audio buffer")
             return
         }
@@ -463,7 +663,37 @@ class AudioEngine: ObservableObject {
         player.scheduleBuffer(buffer, completionHandler: nil)
     }
 
-    private func createBuffer(from file: AVAudioFile, startingFrame: AVAudioFramePosition) -> AVAudioPCMBuffer? {
+    /// Crea un buffer desde el buffer pre-cargado en RAM (seek instantáneo, sin I/O de disco)
+    private func createBufferFromPreloaded(_ preloaded: AVAudioPCMBuffer?, file: AVAudioFile, startingFrame: AVAudioFramePosition) -> AVAudioPCMBuffer? {
+        // Si tenemos buffer pre-cargado, extraer sub-buffer (instantáneo)
+        if let source = preloaded {
+            let remainingFrames = AVAudioFrameCount(source.frameLength) - AVAudioFrameCount(startingFrame)
+
+            guard remainingFrames > 0,
+                  let subBuffer = AVAudioPCMBuffer(pcmFormat: source.format, frameCapacity: remainingFrames) else {
+                return nil
+            }
+
+            // Copiar datos desde el buffer pre-cargado (operación de memoria, muy rápida)
+            let channelCount = Int(source.format.channelCount)
+            for channel in 0..<channelCount {
+                if let srcData = source.floatChannelData?[channel],
+                   let dstData = subBuffer.floatChannelData?[channel] {
+                    let srcOffset = srcData.advanced(by: Int(startingFrame))
+                    dstData.update(from: srcOffset, count: Int(remainingFrames))
+                }
+            }
+            subBuffer.frameLength = remainingFrames
+
+            return subBuffer
+        }
+
+        // Fallback: leer desde disco (más lento)
+        return createBufferFromFile(file, startingFrame: startingFrame)
+    }
+
+    /// Fallback: crear buffer leyendo desde disco
+    private func createBufferFromFile(_ file: AVAudioFile, startingFrame: AVAudioFramePosition) -> AVAudioPCMBuffer? {
         let frameCount = AVAudioFrameCount(file.length - startingFrame)
 
         guard frameCount > 0,
@@ -479,52 +709,6 @@ class AudioEngine: ObservableObject {
         } catch {
             print("❌ Error reading audio file: \(error.localizedDescription)")
             return nil
-        }
-    }
-
-    // MARK: - Private: Position Tracking
-
-    private func updatePositions() {
-        // Update Deck A
-        if isPlayingA, let lastTime = lastRenderTimeA, let nodeTime = playerA.lastRenderTime {
-            let deltaFrames = nodeTime.sampleTime - lastTime.sampleTime
-            framePositionA += deltaFrames
-            lastRenderTimeA = nodeTime
-
-            let currentTime = TimeInterval(framePositionA) / sampleRateA // Use cached sample rate
-
-            // CPU Optimization: Throttling - only update if change is significant
-            let timeDelta = abs(currentTime - lastUpdateTimeA)
-            if timeDelta >= updateThreshold {
-                onPositionUpdate?(.deckA, currentTime)
-                lastUpdateTimeA = currentTime
-            }
-
-            // Check if reached end
-            if let file = audioFileA, framePositionA >= file.length {
-                stop(deck: .deckA)
-            }
-        }
-
-        // Update Deck B
-        if isPlayingB, let lastTime = lastRenderTimeB, let nodeTime = playerB.lastRenderTime {
-            let deltaFrames = nodeTime.sampleTime - lastTime.sampleTime
-            framePositionB += deltaFrames
-            lastRenderTimeB = nodeTime
-
-            let currentTime = TimeInterval(framePositionB) / sampleRateB // Use cached sample rate
-
-            // CPU Optimization: Throttling - only update if change is significant
-            let timeDelta = abs(currentTime - lastUpdateTimeB)
-            if timeDelta >= updateThreshold {
-                onPositionUpdate?(.deckB, currentTime)
-                lastUpdateTimeB = currentTime
-            }
-
-            // Check if reached end
-            if let file = audioFileB, framePositionB >= file.length {
-                stop(deck: .deckB)
-            }
         }
     }
 

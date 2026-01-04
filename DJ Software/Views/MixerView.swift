@@ -39,9 +39,7 @@ struct MixerView: View {
 
                     VerticalFaderView(value: $viewModel.deckAVolume, color: .blue)
                         .frame(width: 40, height: 120)
-                        .onChange(of: viewModel.deckAVolume) { oldValue, newValue in
-                            viewModel.setDeckVolume(newValue, deck: .deckA)
-                        }
+                        // OPTIMIZADO v2: Eliminado onChange redundante - el binding ya actualiza el ViewModel
 
                     Text("\(Int(viewModel.deckAVolume * 100))%")
                         .font(.caption2)
@@ -73,9 +71,7 @@ struct MixerView: View {
 
                     VerticalFaderView(value: $viewModel.deckBVolume, color: .red)
                         .frame(width: 40, height: 120)
-                        .onChange(of: viewModel.deckBVolume) { oldValue, newValue in
-                            viewModel.setDeckVolume(newValue, deck: .deckB)
-                        }
+                        // OPTIMIZADO v2: Eliminado onChange redundante
 
                     Text("\(Int(viewModel.deckBVolume * 100))%")
                         .font(.caption2)
@@ -100,9 +96,7 @@ struct MixerView: View {
 
                     CrossfaderView(position: $viewModel.crossfaderPosition)
                         .frame(width: 300, height: 60)
-                        .onChange(of: viewModel.crossfaderPosition) { oldValue, newValue in
-                            viewModel.setCrossfaderPosition(newValue)
-                        }
+                        // OPTIMIZADO v2: Eliminado onChange redundante
 
                     Text("B")
                         .font(.caption)

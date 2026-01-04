@@ -8,7 +8,7 @@
 import SwiftUI
 
 /// Vista de waveform con zoom que muestra una ventana temporal móvil
-/// Similar a VirtualDJ - el playhead está fijo en el centro y el waveform se mueve
+/// ESTILO VIRTUALDJ: Playhead siempre en el centro, waveform se desplaza
 struct ZoomedWaveformView: View {
     /// Datos de waveform a visualizar
     let waveformData: WaveformData?
@@ -26,12 +26,9 @@ struct ZoomedWaveformView: View {
     let height: CGFloat
 
     /// Ventana visible en segundos (cuántos segundos mostrar a la vez)
-    /// Por ejemplo: 30 segundos = ~10-12 compases a 120 BPM
     let visibleWindowSeconds: TimeInterval
 
     /// Tempo actual (0.5 a 2.0) - ajusta la ventana visible
-    /// Si tempo = 1.2, muestra más segundos de audio (comprimido)
-    /// Si tempo = 0.8, muestra menos segundos de audio (estirado)
     let tempo: Double
 
     init(
@@ -55,14 +52,11 @@ struct ZoomedWaveformView: View {
     var body: some View {
         Canvas { context, size in
             if let data = waveformData {
-                // Calcular playheadX basado en la ventana visible
-                let playheadX = calculatePlayheadX(data: data, size: size)
-
                 // Dibujar waveform con ventana móvil
                 drawScrollingWaveform(context: context, size: size, data: data)
 
-                // Dibujar playhead en la posición calculada
-                drawPlayhead(context: context, size: size, x: playheadX)
+                // Dibujar playhead siempre en el centro
+                drawPlayhead(context: context, size: size, x: size.width / 2)
             } else {
                 // Estado vacío
                 drawEmptyState(context: context, size: size)
@@ -75,98 +69,68 @@ struct ZoomedWaveformView: View {
 
     // MARK: - Drawing Methods
 
-    /// Calcula la posición X del playhead basado en la ventana visible
-    private func calculatePlayheadX(data: WaveformData, size: CGSize) -> CGFloat {
-        guard data.duration > 0 else { return size.width / 2 }
-
-        // Calcular ventana visible ajustada por tempo
-        let tempoAdjustedWindow = visibleWindowSeconds / tempo
-        let windowDuration = min(tempoAdjustedWindow, data.duration)
-        var startTime: TimeInterval
-
-        if currentTime < windowDuration / 2.0 {
-            // Inicio: ventana fija desde 0
-            startTime = 0
-        } else if currentTime > data.duration - (windowDuration / 2.0) {
-            // Final: ventana fija al final
-            startTime = max(0, data.duration - windowDuration)
-        } else {
-            // Medio: ventana centrada
-            startTime = currentTime - (windowDuration / 2.0)
-        }
-
-        let endTime = startTime + windowDuration
-
-        // Calcular posición del playhead dentro de la ventana visible
-        let playheadTimeInWindow = currentTime - startTime
-        let windowSpan = endTime - startTime
-
-        return windowSpan > 0 ? (playheadTimeInWindow / windowSpan) * size.width : size.width / 2
-    }
-
-    /// Dibuja el waveform con scroll - muestra solo la ventana visible alrededor del tiempo actual
+    /// Dibuja el waveform con scroll - ESTILO VIRTUALDJ
+    /// El waveform siempre está centrado en currentTime, mostrando espacio vacío al inicio/final
     private func drawScrollingWaveform(context: GraphicsContext, size: CGSize, data: WaveformData) {
         let samples = data.samples
         guard samples.count > 0, data.duration > 0 else { return }
 
         // Ajustar ventana visible por tempo
-        // Si tempo > 1.0 (más rápido), mostrar más segundos de audio (comprimido)
-        // Si tempo < 1.0 (más lento), mostrar menos segundos de audio (estirado)
-        // Esto hace que el waveform coincida con lo que escuchas
         let tempoAdjustedWindow = visibleWindowSeconds / tempo
-        let windowDuration = min(tempoAdjustedWindow, data.duration)
-        var startTime: TimeInterval
-        var endTime: TimeInterval
+        let windowDuration = tempoAdjustedWindow
 
-        if currentTime < windowDuration / 2.0 {
-            // Inicio: ventana fija desde 0
-            startTime = 0
-            endTime = windowDuration
-        } else if currentTime > data.duration - (windowDuration / 2.0) {
-            // Final: ventana fija al final
-            startTime = max(0, data.duration - windowDuration)
-            endTime = data.duration
-        } else {
-            // Medio: ventana centrada
-            startTime = currentTime - (windowDuration / 2.0)
-            endTime = currentTime + (windowDuration / 2.0)
-        }
+        // ESTILO VIRTUALDJ: Siempre centrar en currentTime (puede ser negativo al inicio)
+        let startTime = currentTime - (windowDuration / 2.0)
+        let endTime = currentTime + (windowDuration / 2.0)
+
+        // Calcular qué parte de la ventana tiene audio real
+        let audioStartTime = max(0, startTime)
+        let audioEndTime = min(data.duration, endTime)
+
+        // Si no hay audio visible, salir
+        guard audioEndTime > audioStartTime else { return }
 
         // Convertir tiempos a índices de samples
-        let startIndex = data.sampleIndex(for: startTime)
-        let endIndex = data.sampleIndex(for: endTime)
-        let visibleSamples = Array(samples[startIndex...min(endIndex, samples.count - 1)])
+        let audioStartIndex = data.sampleIndex(for: audioStartTime)
+        let audioEndIndex = data.sampleIndex(for: audioEndTime)
+        let visibleSamples = Array(samples[audioStartIndex...min(audioEndIndex, samples.count - 1)])
 
         guard visibleSamples.count > 0 else { return }
 
-        // Calcular ancho de cada barra
-        let barWidth = size.width / CGFloat(visibleSamples.count)
+        // Calcular offset X donde empieza el audio real
+        let audioOffsetX: CGFloat
+        if startTime < 0 {
+            let emptyDuration = -startTime
+            audioOffsetX = CGFloat(emptyDuration / windowDuration) * size.width
+        } else {
+            audioOffsetX = 0
+        }
+
+        // Calcular ancho disponible para el audio
+        let audioDuration = audioEndTime - audioStartTime
+        let audioWidth = CGFloat(audioDuration / windowDuration) * size.width
+
+        // Calcular dimensiones de las barras
+        let barWidth = audioWidth / CGFloat(visibleSamples.count)
         let centerY = size.height / 2
         let maxHeight = (size.height / 2) * 0.9
 
-        // Dibujar las barras visibles
-        for (index, amplitude) in visibleSamples.enumerated() {
-            let x = CGFloat(index) * barWidth
-            let barHeight = CGFloat(amplitude) * maxHeight
+        // Dibujar todas las barras con un solo path (sin gradiente de opacidad)
+        let waveformPath = Path { p in
+            for (index, amplitude) in visibleSamples.enumerated() {
+                let x = audioOffsetX + CGFloat(index) * barWidth
+                let barHeight = CGFloat(amplitude) * maxHeight
 
-            // Waveform simétrico
-            let path = Path { p in
                 p.move(to: CGPoint(x: x, y: centerY - barHeight))
                 p.addLine(to: CGPoint(x: x, y: centerY + barHeight))
             }
-
-            // Variar opacidad según distancia del centro (efecto de profundidad)
-            let distanceFromCenter = abs(CGFloat(index) - CGFloat(visibleSamples.count) / 2.0)
-            let maxDistance = CGFloat(visibleSamples.count) / 2.0
-            let normalizedDistance = distanceFromCenter / maxDistance
-            let opacity = 0.4 + (1.0 - normalizedDistance) * 0.6 // 0.4 a 1.0
-
-            context.stroke(
-                path,
-                with: .color(color.opacity(opacity)),
-                lineWidth: max(1, barWidth * 0.8)
-            )
         }
+
+        context.stroke(
+            waveformPath,
+            with: .color(color),
+            lineWidth: max(1, barWidth * 0.8)
+        )
     }
 
     /// Dibuja el playhead en la posición X especificada
@@ -240,7 +204,7 @@ struct ZoomedWaveformView: View {
 
 #Preview {
     VStack(spacing: 20) {
-        // Zoomed waveform con datos (simulado) - tempo normal
+        // Zoomed waveform con datos (simulado)
         ZoomedWaveformView(
             waveformData: WaveformData(
                 trackID: UUID(),
@@ -250,27 +214,10 @@ struct ZoomedWaveformView: View {
             ),
             currentTime: 60,
             duration: 180,
-            color: .blue,
+            color: .cyan,
             height: 100,
             visibleWindowSeconds: 30,
             tempo: 1.0
-        )
-        .padding()
-
-        // Zoomed waveform con tempo rápido (1.2x)
-        ZoomedWaveformView(
-            waveformData: WaveformData(
-                trackID: UUID(),
-                samples: (0..<1000).map { _ in Float.random(in: 0.2...1.0) },
-                samplesPerSecond: 50,
-                duration: 180
-            ),
-            currentTime: 60,
-            duration: 180,
-            color: .green,
-            height: 100,
-            visibleWindowSeconds: 30,
-            tempo: 1.2
         )
         .padding()
 

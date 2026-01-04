@@ -21,6 +21,11 @@ class DeckViewModel: ObservableObject {
     private let audioEngine: AudioEngine
     private var cancellables = Set<AnyCancellable>()
 
+    // CPU Optimization: Additional throttling for position updates
+    // Only update state if visual change would be noticeable
+    private var lastUIUpdateTime: TimeInterval = 0
+    private let uiUpdateThreshold: TimeInterval = 0.05 // 50ms = 20 FPS max for UI updates
+
     // MARK: - Initialization
 
     init(deckID: DeckID, audioEngine: AudioEngine) {
@@ -179,8 +184,14 @@ class DeckViewModel: ObservableObject {
     }
 
     /// Actualiza la posición actual (llamado por AudioEngine)
+    /// OPTIMIZADO: Solo actualiza el state si el cambio es visualmente significativo
     func updatePosition(_ time: TimeInterval) {
+        // CPU Optimization: Skip update if change is too small to be noticeable
+        let timeDelta = abs(time - lastUIUpdateTime)
+        guard timeDelta >= uiUpdateThreshold else { return }
+
         state.currentTime = time
+        lastUIUpdateTime = time
     }
 
     // MARK: - Tempo & Pitch

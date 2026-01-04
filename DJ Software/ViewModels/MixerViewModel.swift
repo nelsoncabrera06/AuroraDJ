@@ -31,11 +31,38 @@ class MixerViewModel: ObservableObject {
     // MARK: - Properties
 
     private let audioEngine: AudioEngine
+    private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Initialization
 
     init(audioEngine: AudioEngine) {
         self.audioEngine = audioEngine
+        setupObservers()
+    }
+
+    // OPTIMIZADO v2: Observar cambios de propiedades y aplicar al audio engine
+    private func setupObservers() {
+        // Observar cambios de volumen con throttle para reducir actualizaciones
+        $deckAVolume
+            .throttle(for: .milliseconds(50), scheduler: DispatchQueue.main, latest: true)
+            .sink { [weak self] _ in
+                self?.applyMixerVolumes()
+            }
+            .store(in: &cancellables)
+
+        $deckBVolume
+            .throttle(for: .milliseconds(50), scheduler: DispatchQueue.main, latest: true)
+            .sink { [weak self] _ in
+                self?.applyMixerVolumes()
+            }
+            .store(in: &cancellables)
+
+        $crossfaderPosition
+            .throttle(for: .milliseconds(50), scheduler: DispatchQueue.main, latest: true)
+            .sink { [weak self] _ in
+                self?.applyMixerVolumes()
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Crossfader Control
@@ -80,8 +107,7 @@ class MixerViewModel: ObservableObject {
         // Apply to audio engine
         audioEngine.setVolume(finalVolumeA, deck: .deckA)
         audioEngine.setVolume(finalVolumeB, deck: .deckB)
-
-        print("🎚️ Crossfader: \(Int(crossfaderPosition * 100))% | Deck A: \(Int(deckAVolume * 100))% × \(Int(crossfaderA * 100))% = \(Int(finalVolumeA * 100))% | Deck B: \(Int(deckBVolume * 100))% × \(Int(crossfaderB * 100))% = \(Int(finalVolumeB * 100))%")
+        // OPTIMIZADO v2: Eliminado print() - costoso en hot-path
     }
 
     // MARK: - EQ Control
@@ -109,6 +135,6 @@ class MixerViewModel: ObservableObject {
 
         // Apply to audio engine
         audioEngine.setEQ(deck: deck, band: band, gain: gain)
-        print("🎚️ EQ \(band) Deck \(deck.rawValue): \(String(format: "%+.1fdB", gain))")
+        // OPTIMIZADO v2: Eliminado print() - costoso en hot-path
     }
 }
